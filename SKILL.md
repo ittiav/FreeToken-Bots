@@ -1,0 +1,58 @@
+---
+name: freetoken-bots
+description: Discover, verify, and maintain zero-priced OpenRouter models for Pi child-agent workflows used by Muse, Grokbot, or Dot. Use for free-model discovery, quota-safe Pi fallback, model recommendations, and daily health checks.
+version: 0.1.3
+---
+
+# FreeToken-Bots
+
+Pi is the execution layer; Muse, Grokbot and Dot may invoke it **only if they can run shell commands or access a separately deployed Pi service**. Do not claim to replace those products' native models.
+
+## Principles
+
+- Free means OpenRouter catalog `pricing.prompt == 0` and `pricing.completion == 0`, with any explicit request/cache prices also zero. Free eligibility is dynamic, not a permanent promise.
+- Only classify **verified** total-parameter counts ≥100B as flagship. The `/models` API may omit parameter counts; in that case preserve the model in `needs_parameter_verification`, not the approved pool. Do not guess 100B from a model's name.
+- Require `tools` in `supported_parameters` for child-agent candidates; independently probe tool-calling before production use. An ordinary completion probe is **not** proof of tool support.
+- Never route to a paid model automatically. A 402, quota-exhausted response, or rate limit is not a reason to remove the user's existing Pi provider configuration.
+- **Fail-closed model resolution (v0.1.1):** `probe --model` never trusts a hand-typed ID. It is resolved against the latest free scan: an exact verified-free ID is used as-is; a missing `:free` suffix is auto-corrected with a loud warning (dropping it silently routes to the PAID variant — this exact mistake cost a live call once); any other ID is refused outright. Every probe refreshes the public model catalog immediately before resolving, regardless of cache age. Catalog errors refuse the probe; cached prices never authorize a call.
+- Do not put API keys in Git or print key values. Prompt for `OPENROUTER_API_KEY` if live probing is requested and unset.
+- Pi settings should not be rewritten without preserving user providers/defaults and validating the installed Pi's schema.
+- All unattended `pi -p` calls must use `</dev/null`.
+
+## Usage
+
+From this skill directory:
+
+```bash
+python3 scripts/radar.py scan
+python3 scripts/radar.py status
+OPENROUTER_API_KEY=... python3 scripts/radar.py probe --model 'exact/openrouter-id:free'
+python3 scripts/radar.py sync --dry-run
+```
+
+`probe` exits with code 0 on success and 1 on refusal, catalog failure or completion failure (argument errors use code 2). Cache timestamps must be timezone-aware and between now and 24 hours ago, and `free_ids` must be a list of non-empty strings. Invalid caches are rejected. A price check reduces risk but cannot guarantee prices remain unchanged between checking and execution.
+
+`scan` writes a private report to `~/.pi/agent/freetoken-bots.json`. `sync` currently emits a **proposal only**, deliberately not modifying `models.json` (Pi schema and model identifiers must be verified on the installed Pi before write integration). This is a safe MVP, not an automatic router.
+
+## Pi integration workflow
+
+1. Check `command -v pi`, `pi --version`, `~/.pi/agent/settings.json`, `~/.pi/agent/models.json`, and `pi --list-models` without disclosing keys.
+2. Scan. Resolve model parameter counts from trustworthy model/provider documentation. Only move independently verified ≥100B entries into approved pool.
+3. Probe a plain chat completion and a separate real `tools` call; distinguish 429 temporary rate limit from hard daily-quota exhaustion.
+4. Check OpenRouter model ID, provider compatibility and context/max-token fields. Generate a candidate diff; do **not** overwrite Ling custom provider or `enabledModels`.
+5. Require explicit approval of diff before applying. Back up original files, write atomically, run `python3 -m json.tool`, `pi --list-models` and `pi -p 'say pong' --no-extensions </dev/null`. On failure revert.
+6. For Muse/Grokbot/Dot use a controlled shell child-agent invocation. Confirm host supports executing a local Pi command, shared workspace access and result capture first. Never expose Pi's shell/API to the public internet without authentication.
+7. Ask user which model to use before major tasks; use automatic fallback only after user opts in. Never replay side-effectful actions after uncertain completion.
+
+## Scheduling (required, not optional)
+
+This skill does **not** scan by itself. A daily scan is **required** — without it the free-model list goes stale (free eligibility on OpenRouter is dynamic: models get delisted or repriced without notice).
+
+- Run `python3 /absolute/path/to/scripts/radar.py scan` **every day at 08:00 local time** on the machine running Pi. Use cron, launchd, or a systemd timer — pick one and keep it. Example cron: `0 8 * * * /usr/bin/python3 /path/to/scripts/radar.py scan`
+- **On install, tell the user explicitly:** "这个 skill 需要每天早上 8 点跑一次扫描定时任务，不配的话免费名单会过期，它自己不会动。" Do not present the skill as working without the timer.
+- Each run: compare against the previous report; surface newly listed free models, delisted models, repriced (no-longer-free) models, and any change to the `eligible` pool.
+- A ChatGPT reminder/watch does not edit that machine. Confirm repeated transient errors before marking a model unusable. Keep separate `eligible`, `needs_parameter_verification`, and inactive states.
+
+## Model selection
+
+Prefer verified free ≥100B tool-capable models when available, but report a smaller tool-capable free model separately when that is operationally better. If no candidate passes, report empty pool rather than silently falling back to paid tokens.
